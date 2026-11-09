@@ -1,0 +1,17 @@
+# Local credentials — never commit
+secrets.h
+
+# Arduino / IDE
+*.hex
+*.bin
+*.elf
+*.map
+.vscode/
+.idea/
+*.bak
+*~
+
+# Host test binaries
+tests/t
+tests/t.exe
+tests/*.o

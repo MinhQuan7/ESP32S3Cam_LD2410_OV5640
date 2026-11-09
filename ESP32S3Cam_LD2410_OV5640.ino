@@ -5,6 +5,10 @@
  * streams RGB565 240x240 to ST7789 while present. On absence: camera deinit,
  * panel sleep, backlight off.
  *
+ * Optional (UPLOAD_ENABLED): WiFi + JPEG upload to Supabase Storage on a
+ * core-0 task, cooldown UPLOAD_PERIOD_MS (default 5 min). Copy secrets.h.example
+ * → secrets.h and run docs/supabase_setup.sql once.
+ *
  * Wiring (ESP32-S3-EYE / N16R8 — free GPIOs):
  *   ST7789 SCL=14  SDA=21  DC=48  RST=47  CS=38  BL=39  VCC=3V3  GND=GND
  *   LD2410 TX->41  RX->42  VCC=5V/3V3  GND=GND
@@ -17,12 +21,17 @@
  *   1) Serial should print LD2410 firmware version. If "not connected", check TX/RX.
  *   2) Splash on boot, snapshot on presence, black+BL off on absence.
  *   3) If colors look swapped, set TFT_RGB565_BIG_ENDIAN 0 in config.h
+ *   4) For upload: fill secrets.h, expect [NET]/[UPL] lines in Serial.
  */
 
 #include <ld2410.h>
 #include "config.h"
 #include "camera_init.h"
 #include "display_st7789.h"
+#if UPLOAD_ENABLED
+#include "net_wifi.h"
+#include "supabase_uploader.h"
+#endif
 
 enum AppState : uint8_t {
   STATE_ASLEEP = 0,
@@ -41,6 +50,7 @@ static uint32_t captureOkCount = 0;
 static uint32_t fpsWindowCount = 0;
 static uint32_t fpsWindowStartMs = 0;
 static uint32_t lastFps = 0;
+static uint32_t awakeSinceMs = 0;
 
 static bool s_present = false;
 static bool s_pending = false;
@@ -165,6 +175,9 @@ static void printStatus() {
                 ESP.getFreeHeap(),
                 ESP.getFreePsram(),
                 (unsigned long)millis());
+#if UPLOAD_ENABLED
+  uploaderPrintStatus();
+#endif
   Serial.println("------------------------");
   Serial.flush();
 }
@@ -179,6 +192,15 @@ static bool captureAndShow() {
   displayShowRGB565(reinterpret_cast<const uint16_t *>(fb->buf),
                     static_cast<int16_t>(fb->width),
                     static_cast<int16_t>(fb->height));
+#if UPLOAD_ENABLED
+  {
+    const uint32_t now = millis();
+    if ((uint32_t)(now - awakeSinceMs) >= (uint32_t)UPLOAD_SETTLE_MS &&
+        uploaderIsDue(now)) {
+      uploaderSubmitRGB565(fb);
+    }
+  }
+#endif
   cameraFbReturn(fb);
 
   lastCaptureMs = millis();
@@ -230,6 +252,13 @@ void setup() {
   displaySplash("waiting...");
   presenceInit();
 
+#if UPLOAD_ENABLED
+  netBegin();
+  if (!uploaderInit()) {
+    Serial.println("[BOOT] uploader init failed — uploads disabled this boot");
+  }
+#endif
+
   if (presenceIsPresent()) {
     Serial.println("[BOOT] already present — wake on first loop");
     state = STATE_WAKING;
@@ -277,6 +306,7 @@ void loop() {
       fpsWindowCount = 0;
       fpsWindowStartMs = millis();
       lastFps = 0;
+      awakeSinceMs = millis();
       state = STATE_AWAKE;
       Serial.printf("[APP] WAKING -> AWAKE live view cycle=%lu heap=%u psram=%u\n",
                     (unsigned long)wakeCycleCount,

@@ -147,11 +147,16 @@ Cấu trúc bắt buộc:
 ESP32S3Cam_LD2410_OV5640/
 ├── ESP32S3Cam_LD2410_OV5640.ino
 ├── config.h
+├── secrets.h.example          # copy → secrets.h (gitignored)
 ├── camera_pins.h
-├── camera_init.h
-├── camera_init.cpp
-├── display_st7789.h
-└── display_st7789.cpp
+├── camera_init.h / .cpp
+├── display_st7789.h / .cpp
+├── net_wifi.h / .cpp
+├── supabase_uploader.h / .cpp
+├── supabase_ca.h
+├── upload_schedule.h
+├── docs/supabase_setup.sql
+└── tests/test_upload_schedule.cpp
 ```
 
 ---
@@ -276,12 +281,79 @@ Chỉ sửa khi đã nạp chạy được bản mặc định.
 | `ABSENCE_CONFIRM_MS` | `15000` | Debounce hết người (ms) |
 | `CAPTURE_REFRESH_MS` | `0` | `0` = frame nhanh nhất |
 | `CAMERA_VFLIP` / `CAMERA_HMIRROR` | `1` / `0` | Lật ảnh |
+| `UPLOAD_ENABLED` | `1` | `0` = tắt WiFi/upload, chỉ live view |
+| `UPLOAD_PERIOD_MS` | `300000` | Cooldown giữa 2 lần upload thành công (5 phút) |
+| `UPLOAD_SETTLE_MS` | `1500` | Chờ AEC/AWB sau khi wake trước khi up |
+| `UPLOAD_JPEG_QUALITY` | `80` | Chất lượng JPEG (1–100) |
+| `UPLOAD_SWAP_BYTES` | `0` | `1` nếu màu ảnh trên Supabase bị đảo |
 
 Board camera khác ESP32-S3-EYE: sửa `camera_pins.h`, chỉ bật **một** `#define CAMERA_MODEL_...`.
 
 ---
 
-## 10. Quy trình tóm tắt (in ra bàn nạp)
+## 10. Supabase snapshot upload
+
+Khi `UPLOAD_ENABLED=1`, firmware đẩy **JPEG 240×240** lên Supabase Storage tối đa **1 ảnh / 5 phút** mỗi thiết bị. Nén JPEG + HTTPS chạy trên FreeRTOS task **core 0** — live view (core 1) không bị block.
+
+### 10.1. Tạo secrets
+
+```bat
+copy secrets.h.example secrets.h
+```
+
+Điền trong `secrets.h`:
+
+| Macro | Ví dụ |
+|---|---|
+| `WIFI_SSID` / `WIFI_PASS` | WiFi 2.4 GHz |
+| `SUPABASE_HOST` | `abcdefgh.supabase.co` (không có `https://`) |
+| `SUPABASE_KEY` | **anon / publishable** key (không dùng `service_role`) |
+| `SUPABASE_BUCKET` | `camera-snapshots` |
+| `DEVICE_ID` | `cam-01` (khớp RLS policy) |
+
+`secrets.h` đã có trong `.gitignore` — không commit.
+
+### 10.2. SQL setup (chạy 1 lần)
+
+Supabase Dashboard → **SQL Editor** → chạy [`docs/supabase_setup.sql`](docs/supabase_setup.sql).
+
+Policy: bucket private, anon chỉ **INSERT**, path prefix = `DEVICE_ID`, mime `image/jpeg`, max 200 KB.
+
+### 10.3. Object path
+
+```
+<DEVICE_ID>/<YYYYMMDD>/<HHMMSS>_<seq>.jpg
+```
+
+Nếu NTP chưa sync: `<DEVICE_ID>/nosync/<bootId>_<millis>.jpg`.
+
+### 10.4. Log Serial
+
+| Log | Ý nghĩa |
+|---|---|
+| `[NET] WiFi begin ssid=...` | Bắt đầu kết nối (non-blocking) |
+| `[UPL] ready period=300000ms ...` | Task uploader OK |
+| `[UPL] POST ... bytes -> camera-snapshots/...` | Đang gửi |
+| `[UPL] OK HTTP 200` | Upload thành công — chờ thêm 5 phút |
+| `[UPL] HTTP 401/403` | Key/RLS sai — backoff 60→120→240→300 s |
+| `[UPL] state=BUSY/IDLE ok=... fail=...` | Trong STATUS định kỳ |
+
+### 10.5. HIL checklist (sau khi nạp)
+
+| # | Kiểm tra | Kỳ vọng | Kết quả |
+|---|---|---|---|
+| 1 | Có người sau boot | ~1.5 s sau AWAKE có object trong bucket, màu đúng | NOT_RUN |
+| 2 | Còn người | Lần up tiếp theo cách ~5 phút | NOT_RUN |
+| 3 | FPS trong STATUS | Trong lúc upload, FPS chênh ≤ 1 so với trước | NOT_RUN |
+| 4 | Tắt router | Không treo; reconnect xong up lại | NOT_RUN |
+| 5 | Key sai | Log 401, backoff 60/120/240/300 s | NOT_RUN |
+| 6 | Người rời giữa upload | Không crash; heap ổn sau nhiều chu kỳ | NOT_RUN |
+
+Host unit test (scheduler): `g++ -std=c++17 tests/test_upload_schedule.cpp -o tests/t.exe && tests\t.exe` — đã PASS trên máy phát triển.
+
+---
+
+## 11. Quy trình tóm tắt (in ra bàn nạp)
 
 1. Cài Arduino IDE 2.x + driver COM.
 2. Preferences → dán URL `package_esp32_index.json`.
@@ -294,10 +366,11 @@ Board camera khác ESP32-S3-EYE: sửa `camera_pins.h`, chỉ bật **một** `#
 
 ---
 
-## 11. Yêu cầu kỹ thuật (giữ realtime)
+## 12. Yêu cầu kỹ thuật (giữ realtime)
 
 - PSRAM **OPI** bắt buộc: framebuffer RGB565 240×240 nằm PSRAM (`CAMERA_FB_IN_PSRAM`), `fb_count = 2`, `CAMERA_GRAB_LATEST`.
 - SPI TFT 40 MHz — không hạ trừ khi màn hình nhiễu.
 - `CAPTURE_REFRESH_MS = 0` để pipeline camera → SPI không bị delay nhân tạo.
-- Không thêm `delay()` trong nhánh `STATE_AWAKE`.
+- Không thêm `delay()` / HTTP trong nhánh `STATE_AWAKE` — upload chỉ `memcpy` + notify.
+- Snapshot upload buffer riêng trong PSRAM: camera deinit khi người rời đi không ảnh hưởng upload đang chạy.
 - Không thay GFX bằng thư viện chậm hơn (TFT_eSPI software SPI, fill từng pixel) nếu muốn giữ live view mượt.

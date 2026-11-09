@@ -127,3 +127,46 @@
 #ifndef CAMERA_HMIRROR
 #define CAMERA_HMIRROR 0
 #endif
+
+// --- Supabase snapshot upload -----------------------------------------------
+// Set UPLOAD_ENABLED 0 to restore camera+TFT-only behaviour (no WiFi/TLS).
+#ifndef UPLOAD_ENABLED
+#define UPLOAD_ENABLED 1
+#endif
+
+#ifndef UPLOAD_PERIOD_MS
+#define UPLOAD_PERIOD_MS 300000
+#endif
+
+#ifndef UPLOAD_RETRY_MIN_MS
+#define UPLOAD_RETRY_MIN_MS 60000
+#endif
+
+#ifndef UPLOAD_SETTLE_MS
+#define UPLOAD_SETTLE_MS 1500
+#endif
+
+#ifndef UPLOAD_JPEG_QUALITY
+#define UPLOAD_JPEG_QUALITY 80
+#endif
+
+#ifndef UPLOAD_HTTP_TIMEOUT_MS
+#define UPLOAD_HTTP_TIMEOUT_MS 10000
+#endif
+
+#ifndef UPLOAD_TASK_CORE
+#define UPLOAD_TASK_CORE 0
+#endif
+
+#ifndef UPLOAD_TASK_STACK
+#define UPLOAD_TASK_STACK 12288
+#endif
+
+#ifndef UPLOAD_TASK_PRIO
+#define UPLOAD_TASK_PRIO 1
+#endif
+
+// 1 = swap RGB565 bytes before JPEG encode (fix if uploaded colours look wrong)
+#ifndef UPLOAD_SWAP_BYTES
+#define UPLOAD_SWAP_BYTES 0
+#endif
