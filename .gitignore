@@ -1,5 +1,4 @@
-# Local credentials — never commit
-secrets.h
+
 
 # Arduino / IDE
 *.hex
